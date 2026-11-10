@@ -8,10 +8,10 @@ import { saveSessionState } from './context.js';
 import {
   OVERLAY_STEP_PAUSE_MS,
   OVERLAY_COMPLETE_PAUSE_MS,
-  TEAMS_HOSTS,
 } from '../constants.js';
 import { extractSubstrateToken } from '../auth/token-extractor.js';
 import * as logger from '../utils/logger.js';
+import { isTeamsUrl as isTrustedTeamsUrl } from '../security/network-policy.js';
 
 /**
  * Default Teams URL for initial login.
@@ -182,7 +182,13 @@ interface AuthStatus {
  * Checks if the current page URL indicates a login flow.
  */
 function isLoginUrl(url: string): boolean {
-  return LOGIN_URL_PATTERNS.some(pattern => url.includes(pattern));
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && !parsed.username && !parsed.password
+      && !parsed.port && LOGIN_URL_PATTERNS.includes(parsed.hostname);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -230,7 +236,7 @@ const LOGIN_REDIRECT_TIMEOUT_MS = 5000;
  * Checks if a URL is a Teams domain.
  */
 export function isTeamsUrl(url: string): boolean {
-  return TEAMS_HOSTS.some(host => url.includes(host));
+  return isTrustedTeamsUrl(url);
 }
 
 /**
@@ -325,6 +331,7 @@ async function waitForManualLogin(
       const tokensReady = await waitForTokenRefresh(page, context, onProgress);
       if (!tokensReady) {
         // Tokens didn't appear within timeout — save whatever state we have
+        log('Saving session state...');
         await saveSessionState(context);
       }
       log('Session state saved.');
@@ -433,6 +440,7 @@ async function waitForTokenRefresh(
     
     if (minsRemaining > 0) {
       // Token found - save session state once
+      log('Saving session state...');
       await saveSessionState(context);
       log(`Token refresh detected (${minsRemaining} mins valid).`);
       return true;
@@ -510,7 +518,7 @@ export async function ensureAuthenticated(
   if (headless) {
     const reason = status.isOnLoginPage 
       ? 'Login page detected - user credentials required'
-      : `Unexpected page state: ${status.currentUrl}`;
+      : 'Unexpected page state';
     throw new Error(`Headless SSO failed: ${reason}`);
   }
 

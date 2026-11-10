@@ -26,7 +26,7 @@ import type { SessionState } from './session-store.js';
 
 const MOCK_HOME_ACCOUNT_ID = 'user-guid.tenant-guid';
 const MOCK_CLIENT_ID = '5e3ce6c0-2b1f-4285-8d4b-75ee78787346';
-const MOCK_TENANT_ID = 'tenant-guid';
+const MOCK_TENANT_ID = '11111111-2222-3333-4444-555555555555';
 const MOCK_ENVIRONMENT = 'login.windows.net';
 
 /** Creates a minimal MSAL refresh token localStorage entry. */
@@ -283,7 +283,8 @@ describe('refreshTokensViaHttp', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe('AUTH_EXPIRED');
-      expect(result.error.message).toContain('refresh token has expired');
+      expect(result.error.message).toContain('AADSTS700082');
+      expect(result.error.message).not.toContain('refresh token has expired');
     }
   });
 

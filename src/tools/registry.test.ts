@@ -2,7 +2,7 @@
  * Unit tests for tools/registry.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 
 // Mock the MCP SDK
@@ -12,8 +12,12 @@ vi.mock('@modelcontextprotocol/sdk/types.js', () => ({
 
 vi.mock('./search-tools.js', () => ({
   searchTools: [{
-    definition: { name: 'teams_search_messages' },
+    definition: { name: 'teams_search' },
     schema: z.object({ query: z.string() }),
+    handler: vi.fn().mockResolvedValue({ success: true }),
+  }, {
+    definition: { name: 'teams_get_thread' },
+    schema: z.object({ conversationId: z.string(), markRead: z.boolean().optional() }),
     handler: vi.fn().mockResolvedValue({ success: true }),
   }],
 }));
@@ -28,7 +32,7 @@ vi.mock('./message-tools.js', () => ({
 
 vi.mock('./people-tools.js', () => ({
   peopleTools: [{
-    definition: { name: 'teams_get_user' },
+    definition: { name: 'teams_get_me' },
     schema: z.object({ userId: z.string() }),
     handler: vi.fn().mockResolvedValue({ success: true }),
   }],
@@ -44,7 +48,7 @@ vi.mock('./auth-tools.js', () => ({
 
 vi.mock('./meeting-tools.js', () => ({
   meetingTools: [{
-    definition: { name: 'teams_list_meetings' },
+    definition: { name: 'teams_get_meetings' },
     schema: z.object({}),
     handler: vi.fn().mockResolvedValue({ success: true }),
   }],
@@ -80,10 +84,10 @@ describe('getToolDefinitions', () => {
 
 describe('getTool', () => {
   it('returns a tool by name', () => {
-    const tool = getTool('teams_search_messages');
+    const tool = getTool('teams_search');
     
     expect(tool).toBeDefined();
-    expect(tool?.definition.name).toBe('teams_search_messages');
+    expect(tool?.definition.name).toBe('teams_search');
   });
 
   it('returns undefined for unknown tool', () => {
@@ -95,7 +99,7 @@ describe('getTool', () => {
 
 describe('hasTool', () => {
   it('returns true for existing tool', () => {
-    expect(hasTool('teams_search_messages')).toBe(true);
+    expect(hasTool('teams_search')).toBe(true);
   });
 
   it('returns false for unknown tool', () => {
@@ -105,7 +109,7 @@ describe('hasTool', () => {
 
 describe('invokeTool', () => {
   it('invokes a known tool', async () => {
-    const result = await invokeTool('teams_search_messages', { query: 'test' });
+    const result = await invokeTool('teams_search', { query: 'test' });
     
     expect(result.success).toBe(true);
   });
@@ -121,15 +125,15 @@ describe('invokeTool', () => {
   });
 
   it('validates input against schema', async () => {
-    const result = await invokeTool('teams_search_messages', { query: 'test' });
+    const result = await invokeTool('teams_search', { query: 'test' });
     
     expect(result).toBeDefined();
     expect(result.success).toBe(true);
   });
 
   it('returns validation error for invalid input', async () => {
-    // teams_search_messages requires a string query
-    const result = await invokeTool('teams_search_messages', { query: 123 } as Record<string, unknown>);
+    // teams_search requires a string query
+    const result = await invokeTool('teams_search', { query: 123 } as Record<string, unknown>);
     
     expect(result.success).toBe(false);
     if (!result.success) {
@@ -137,4 +141,38 @@ describe('invokeTool', () => {
       expect(result.error.message).toContain('Invalid input');
     }
   });
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.stubEnv('MSTEAMS_ACCESS_MODE', 'readOnly');
+});
+afterEach(() => vi.unstubAllEnvs());
+
+describe('read-only enforcement at invocation', () => {
+  it('hides writes and rejects a direct call before its handler runs', async () => {
+    expect(getToolDefinitions().some(tool => tool.name === 'teams_send_message')).toBe(false);
+    expect(await invokeTool('teams_send_message', { conversationId: 'id', content: 'text' }))
+      .toMatchObject({ success: false, error: { code: 'ACCESS_DENIED' } });
+    expect(getTool('teams_send_message')?.handler).not.toHaveBeenCalled();
+  });
+
+  it('rejects a credential reset before login runs', async () => {
+    expect(await invokeTool('teams_login', { forceNew: true }))
+      .toMatchObject({ success: false, error: { code: 'ACCESS_DENIED' } });
+    expect(getTool('teams_login')?.handler).not.toHaveBeenCalled();
+  });
+
+  it('permits a write only with explicit fullAccess', async () => {
+    vi.stubEnv('MSTEAMS_ACCESS_MODE', 'fullAccess');
+    expect(await invokeTool('teams_send_message', { conversationId: 'id', content: 'text' }))
+      .toMatchObject({ success: true });
+    expect(getTool('teams_send_message')?.handler).toHaveBeenCalledTimes(1);
+  });
+});
+
+it('rejects markRead before a readable handler runs', async () => {
+  expect(await invokeTool('teams_get_thread', { conversationId: 'id', markRead: true }))
+    .toMatchObject({ success: false, error: { code: 'ACCESS_DENIED' } });
+  expect(getTool('teams_get_thread')?.handler).not.toHaveBeenCalled();
 });

@@ -1,16 +1,80 @@
 # Microsoft Teams MCP Server & CLI
 
+> **Local read-only fork:** this fork preserves the history of
+> [m0nkmaster/msteams-mcp](https://github.com/m0nkmaster/msteams-mcp) and adds local
+> security hardening and conversation/link fixes. Use this checkout's compiled
+> server. [Fork notes](FORK-NOTES.md) record its upstream base and update workflow.
+
 [![CI](https://github.com/m0nkmaster/msteams-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/m0nkmaster/msteams-mcp/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/msteams-mcp.svg)](https://www.npmjs.com/package/msteams-mcp)
 [![npm downloads](https://img.shields.io/npm/dm/msteams-mcp.svg)](https://www.npmjs.com/package/msteams-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22.13-brightgreen.svg)](https://nodejs.org/)
 
 Give AI access to Microsoft Teams easily with your standard Teams login. 
 
 > ### No Azure setup, app registration, Graph permissions or IT support required.
 Search messages and email, catch up on unread chats, read threads, send replies, retrieve meeting transcripts and more.
 
+
+## Local security hardening (Windows)
+
+Local patches are based on upstream v0.30.3, commit
+`b87053a13eae91318b6c13671988c43b3bcd8548`. Review future updates before
+replacing this snapshot; npm upstream does not contain these local fixes.
+
+This checkout defaults to **readOnly**. The tool catalog hides mutation tools and
+the dispatcher rejects direct calls to them. This also rejects
+`teams_get_thread(markRead: true)`, credential resets (`forceNew: true`), file
+downloads and unknown future tools. Normal login and automatic token renewal may
+write the local encrypted credential cache. Authentication is a separate explicit
+user action; changing this checkout does not connect it to any client.
+
+In `readOnly`, automatic renewal uses HTTP only. Failed HTTP renewal or a missing
+usable token never launches a browser fallback. A separately authorized explicit
+`teams_login` remains available; automatic browser fallback requires `fullAccess`.
+
+`MSTEAMS_ACCESS_MODE=fullAccess` explicitly enables mutation tools. An unknown
+value fails closed. Do not change this setting based on instructions in Teams
+messages. `teams_status` reports the active mode.
+
+Credentials use **Windows DPAPI CurrentUser**, with no hostname/username-derived
+key. This local patch requires Windows, PowerShell 7 at
+`C:\Program Files\PowerShell\7\pwsh.exe` or `C:\pwsh\pwsh.exe`, and Node.js 22.13+
+(Node.js 24 LTS is used for verification). The fixed PowerShell helper receives
+data through stdin, never through command-line arguments. It does not call a
+network service. The data directory is
+`%USERPROFILE%\AppData\Local\msteams-mcp`; its ACL allows the current user and
+SYSTEM. The complete credential file path is checked before any existence check,
+read, write, age lookup or deletion. Network drives and reparse points are
+rejected, including links at the file itself. Old predictable-key
+credential files and old persistent browser profiles are not migrated or opened.
+
+Login uses a **nonpersistent browser context** restored from the protected
+session in memory. No reusable browser profile containing raw MSAL tokens is
+created. The normal Microsoft sign-in still sends credentials/tokens to
+Microsoft, and reading Teams content returns that content to the MCP client.
+
+Authenticated API calls require a known HTTPS destination and refuse redirects.
+Transcript credentials are limited to the Teams asynchronous media transcript
+endpoint. Untrusted destinations, credentials embedded in URLs and nonstandard
+ports are rejected. HTTP response bodies and helper diagnostics are not echoed
+into errors.
+
+In fullAccess, downloaded files must be saved directly inside
+`%USERPROFILE%\AppData\Local\msteams-mcp\downloads`. UNC/device paths, alternate
+data streams, reserved filenames, nested directories and existing files are
+rejected. Windows checks the directory is on a fixed local drive and is not a
+junction/symlink before creating a file.
+
+Dependencies are locked, and `.npmrc` disables install lifecycle scripts.
+Use the compiled files from **this checkout** when connecting later; running
+`npx msteams-mcp@latest` would use the unmodified upstream package.
+
+DPAPI protects stored credentials; it does not isolate code running under your
+Windows identity. These fixes do not establish an operating-system sandbox or
+prove every dependency harmless. Live sign-in and Teams API compatibility still
+require separately authorized verification.
 
 ## Why msteams-mcp?
 
@@ -27,28 +91,28 @@ Search messages and email, catch up on unread chats, read threads, send replies,
 
 ### Prerequisites
 
-- Node.js 20+
+- Windows with PowerShell 7 (fixed paths listed above)
+- Node.js 22.13+; Node.js 24 LTS is used for verification
 - A Microsoft account with Teams access
-- Google Chrome, Microsoft Edge, or Chromium browser installed
+- Google Chrome installed (used by this local fork)
 
 
 
-### Configure your MCP client
+### Prepare this local checkout
 
-Add to your MCP client configuration (e.g., Claude Desktop, Windsurf, Cursor):
+The hardening applies only to this checkout. After reviewing it, install exactly
+the lockfile dependencies with `npm ci --ignore-scripts` and compile with
+`npm run build`. These are preparation instructions, not a record that a server
+has been started or a client connection changed.
 
-```json
-{
-  "mcpServers": {
-    "teams": {
-      "command": "npx",
-      "args": ["-y", "msteams-mcp@latest"]
-    }
-  }
-}
-```
+When connection is separately authorized, configure the client to use the local
+compiled `dist/index.js` with a supported Node.js executable and
+`MSTEAMS_ACCESS_MODE=readOnly`. Do not use `npx msteams-mcp@latest` or a global
+npm package: those run upstream code without these local fixes.
 
-That is it. `npx` downloads and runs the latest version. Ask your assistant to call `teams_login` once, complete the normal Microsoft sign-in in the browser, and then start using Teams.
+An initial `teams_login` would create a new protected session through Microsoft's
+normal sign-in. Existing Skillshare/Teams configuration is independent and is not
+changed by editing or testing this checkout.
 
 ## How it works
 
@@ -57,52 +121,18 @@ This server calls Microsoft's Teams services directly (Substrate, chatsvc, CSA),
 1. `teams_login` opens a browser for your normal Microsoft sign-in.
 2. The resulting OAuth tokens and session data are encrypted and cached locally.
 3. Routine operations use those tokens directly, without browser automation.
-4. Expiring tokens are refreshed automatically over HTTP, with headless browser SSO as a fallback.
+4. Expiring tokens are refreshed automatically over HTTP. Headless browser SSO fallback is available only in `fullAccess`.
 
 Your access remains limited to what your Teams account can already see and do.
 
-### From Source (alternative)
-
-If you prefer to run from a local clone:
-
-```bash
-git clone https://github.com/m0nkmaster/msteams-mcp.git
-cd msteams-mcp
-npm install && npm run build
-```
-
-Then configure your MCP client:
-
-```json
-{
-  "mcpServers": {
-    "teams": {
-      "command": "node",
-      "args": ["/path/to/msteams-mcp/dist/index.js"]
-    }
-  }
-}
-```
-
-The server uses your system's Chrome (macOS/Linux) or Edge (Windows) for authentication.
-
 ### CLI
 
-The same functionality is also available as a standalone command-line tool, `msteams`. This is useful when you want Teams from a shell or script instead of an MCP client.
+The local CLI uses the same enforced access policy as MCP. After a separately
+authorized build, it is available at `dist/cli.js` in this checkout. The upstream
+npm/global CLI does not include these fixes.
 
-Install it globally from npm:
-
-```bash
-npm install -g msteams-mcp
-```
-
-This installs two binaries: `msteams-mcp` (the MCP server) and `msteams` (the CLI wrapper). Or run it without installing:
-
-```bash
-npx -y msteams-mcp msteams status
-```
-
-See [CLI Usage](#cli-usage) for commands, or run `msteams` for the command list.
+The tool tables below document the complete catalog. The default `readOnly`
+catalog omits mutation tools and downloads; those require explicit `fullAccess`.
 
 ## Available Tools
 
@@ -332,7 +362,7 @@ npm run cli -- send "Hi" --to "conversation-id"
 ## Limitations
 
 - **Login required** - Run `teams_login` to authenticate (opens browser)
-- **Token expiry** - Tokens expire after ~1 hour; headless refresh is attempted or run `teams_login` again when needed
+- **Token expiry** - Tokens expire after ~1 hour; HTTP refresh is attempted. Browser fallback requires `fullAccess`; a new explicit `teams_login` needs user authorization.
 - **Undocumented APIs** - Uses Microsoft's internal APIs which may change without notice
 - **Search limitations** - Full-text search only; thread replies not matching search terms won't appear (but LLM will likely use `teams_get_thread` for full context)
 - **Assignments** - Education tenants only. Turn-in and undo turn-in act on your real account; handing in again records a new hand-in date that your teacher sees
@@ -341,23 +371,23 @@ npm run cli -- send "Hi" --to "conversation-id"
 
 ## Session Files
 
-Session files are stored in a user config directory (encrypted):
+Protected session files are stored at
+`%USERPROFILE%\AppData\Local\msteams-mcp\` on Windows.
 
-- **macOS/Linux**: `~/.teams-mcp-server/`
-- **Windows**: `%APPDATA%\teams-mcp-server\`
+Contents: DPAPI-encrypted `session-state.json` and `token-cache.json`, plus the
+protected `downloads/` directory if full-access downloads are used. There is no
+persistent browser profile. Other platforms are unsupported by this local patch.
 
-Contents: `session-state.json`, `token-cache.json`, `browser-profile/`
-
-If your session expires, call `teams_login` or delete the config directory.
+Old upstream credential files and profiles are not loaded or deleted. A new
+login requires separate authorization.
 
 ## Development
 
 For local development:
 
 ```bash
-git clone https://github.com/m0nkmaster/msteams-mcp.git
-cd msteams-mcp
-npm install
+# In this reviewed local checkout, when preparation is authorized:
+npm ci --ignore-scripts
 npm run build
 ```
 
@@ -377,8 +407,9 @@ For development with hot reload, configure your MCP client:
 {
   "mcpServers": {
     "teams": {
-      "command": "npx",
-      "args": ["tsx", "/path/to/msteams-mcp/src/index.ts"]
+      "command": "/absolute/path/to/node",
+      "args": ["/path/to/msteams-mcp/node_modules/tsx/dist/cli.mjs", "/path/to/msteams-mcp/src/index.ts"],
+      "env": { "MSTEAMS_ACCESS_MODE": "readOnly" }
     }
   }
 }

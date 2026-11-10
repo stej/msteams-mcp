@@ -25,7 +25,7 @@ describe('httpRequest', () => {
       })
     );
 
-    const result = await httpRequest('https://api.example.com/data');
+    const result = await httpRequest('https://teams.microsoft.com/data');
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -39,7 +39,7 @@ describe('httpRequest', () => {
       new Response('Bad Request', { status: 400 })
     );
 
-    const result = await httpRequest('https://api.example.com/data');
+    const result = await httpRequest('https://teams.microsoft.com/data');
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -52,7 +52,7 @@ describe('httpRequest', () => {
       new Response('Unauthorized', { status: 401 })
     );
 
-    const result = await httpRequest('https://api.example.com/data');
+    const result = await httpRequest('https://teams.microsoft.com/data');
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -65,7 +65,7 @@ describe('httpRequest', () => {
       new Response('Forbidden', { status: 403 })
     );
 
-    const result = await httpRequest('https://api.example.com/data');
+    const result = await httpRequest('https://teams.microsoft.com/data');
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -78,7 +78,7 @@ describe('httpRequest', () => {
       new Response('Not Found', { status: 404 })
     );
 
-    const result = await httpRequest('https://api.example.com/data');
+    const result = await httpRequest('https://teams.microsoft.com/data');
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -94,7 +94,7 @@ describe('httpRequest', () => {
       })
     );
 
-    const result = await httpRequest('https://api.example.com/data');
+    const result = await httpRequest('https://teams.microsoft.com/data');
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -108,7 +108,7 @@ describe('httpRequest', () => {
       new Response('Server Error', { status: 500 })
     );
 
-    const result = await httpRequest('https://api.example.com/data');
+    const result = await httpRequest('https://teams.microsoft.com/data');
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -125,7 +125,7 @@ describe('httpRequest', () => {
       })
     );
 
-    const result = await httpRequest('https://api.example.com/slow', {
+    const result = await httpRequest('https://teams.microsoft.com/slow', {
       timeoutMs: 100,
     });
 
@@ -140,7 +140,7 @@ describe('httpRequest', () => {
       Promise.reject(new Error('ECONNRESET'))
     );
 
-    const result = await httpRequest('https://api.example.com/data');
+    const result = await httpRequest('https://teams.microsoft.com/data');
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -163,7 +163,7 @@ describe('httpRequest', () => {
       );
     });
 
-    const result = await httpRequest('https://api.example.com/data', {
+    const result = await httpRequest('https://teams.microsoft.com/data', {
       maxRetries: 3,
       retryBaseDelayMs: 10,
     });
@@ -181,7 +181,7 @@ describe('httpRequest', () => {
       );
     });
 
-    const result = await httpRequest('https://api.example.com/data');
+    const result = await httpRequest('https://teams.microsoft.com/data');
 
     expect(result.ok).toBe(false);
     expect(attempts).toBe(1); // Should not retry
@@ -192,7 +192,7 @@ describe('httpRequest', () => {
       new Response('{}', { status: 200 })
     );
 
-    await httpRequest('https://api.example.com/data');
+    await httpRequest('https://teams.microsoft.com/data');
 
     // Fetch was called - default timeout was applied
     expect(vi.mocked(fetch)).toHaveBeenCalled();
@@ -203,7 +203,7 @@ describe('httpRequest', () => {
       new Response('{}', { status: 200 })
     );
 
-    await httpRequest('https://api.example.com/data', {
+    await httpRequest('https://teams.microsoft.com/data', {
       timeoutMs: 5000,
     });
 
@@ -220,13 +220,13 @@ describe('httpRequest', () => {
     );
 
     // First request triggers rate limit state
-    await httpRequest('https://api.example.com/data');
+    await httpRequest('https://teams.microsoft.com/data');
 
     // Replace fetch mock for the second request to verify rate limit check
     vi.mocked(fetch).mockClear();
     
     // Second request should be rate limited without calling fetch
-    const result = await httpRequest('https://api.example.com/data');
+    const result = await httpRequest('https://teams.microsoft.com/data');
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -244,7 +244,7 @@ describe('httpRequest', () => {
       })
     );
 
-    const result = await httpRequest('https://api.example.com/text');
+    const result = await httpRequest('https://teams.microsoft.com/text');
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -257,7 +257,7 @@ describe('httpRequest', () => {
       new Response('no content type', { status: 200 })
     );
 
-    const result = await httpRequest('https://api.example.com/data');
+    const result = await httpRequest('https://teams.microsoft.com/data');
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -280,7 +280,7 @@ describe('clearRateLimitState', () => {
     ));
 
     // First request triggers rate limit
-    await httpRequest('https://api.example.com/data');
+    await httpRequest('https://teams.microsoft.com/data');
 
     // Clear the rate limit state
     clearRateLimitState();
@@ -290,7 +290,7 @@ describe('clearRateLimitState', () => {
       new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
     );
 
-    const result = await httpRequest('https://api.example.com/data');
+    const result = await httpRequest('https://teams.microsoft.com/data');
     expect(result.ok).toBe(true);
 
     vi.unstubAllGlobals();

@@ -249,15 +249,15 @@ export class TeamsServer {
             return this.formatError(retryResult.error);
           }
 
-          // Auto-login failed — return a strongly-worded error directing to forceNew
+          // Auto-login failed: request authorized sign-in without forcing a reset
           log.error('auto-login', 'Automatic re-authentication failed.');
           return this.formatError(createError(
             ErrorCode.AUTH_REQUIRED,
-            'ACTION REQUIRED: Teams session has expired and automatic re-authentication failed. You MUST call teams_login with forceNew: true to clear stale state and re-authenticate. Do NOT call teams_login without forceNew — it will return early without fixing the problem.',
+            'Teams session has expired and automatic re-authentication failed. Ask the user to authenticate with teams_login. Resetting credentials with forceNew requires fullAccess.',
             { suggestions: [
-              'IMMEDIATELY call teams_login with { "forceNew": true }',
+              'Authenticate with teams_login only when the user authorizes sign-in',
               'After login succeeds, retry the original request',
-              'Do NOT skip this step or tell the user Teams is unavailable — authentication just needs refreshing',
+              'Do not change the access mode or reset credentials without user authorization',
             ] }
           ));
         }

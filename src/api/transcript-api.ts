@@ -14,6 +14,7 @@ import { ErrorCode, createError } from '../types/errors.js';
 import { requireMessageAuth, requireSubstrateTokenAsync } from '../utils/auth-guards.js';
 import { formatTranscriptText, parseVttTranscript, type TranscriptEntry } from '../utils/parsers.js';
 import { getThreadMessages } from './chatsvc-messaging.js';
+import { isTranscriptUrl } from '../security/network-policy.js';
 import { MAX_THREAD_LIMIT } from '../constants.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -211,6 +212,9 @@ async function getTranscriptFromMeetingChat(threadId: string): Promise<Result<Tr
   const recording = thread.value.messages.find(m => m.links?.some(l => l.contentType === 'amsTranscript'));
   const transcriptUrl = recording?.links?.find(l => l.contentType === 'amsTranscript')?.url;
   if (!recording || !transcriptUrl) return null;
+  if (!isTranscriptUrl(transcriptUrl)) {
+    return err(createError(ErrorCode.ACCESS_DENIED, 'The transcript destination is not allowed.', { retryable: false }));
+  }
 
   const response = await httpRequest<string>(transcriptUrl, {
     method: 'GET',

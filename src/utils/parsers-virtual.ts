@@ -1,17 +1,19 @@
+import type { ChannelContext } from '../types/teams.js';
+
 /**
  * Virtual conversation message parsing and transcript formatting.
  */
 
 import type { ExtractedLink } from '../types/teams.js';
 import { extractLinks, stripHtml } from './parsers-html.js';
-import { extractActivityTimestamp, buildMessageLink, type LinkContext } from './parsers-identifiers.js';
+import { extractActivityTimestamp, buildMessageLink, parseMessageReference, messageReferenceKey, hasReliableLinkContext, type LinkContext } from './parsers-identifiers.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Virtual Conversation Parsing
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Common fields from a virtual conversation message (48:saved, 48:threads, etc). */
-export interface VirtualConversationItem {
+export interface VirtualConversationItem extends ChannelContext {
   id: string;
   content: string;
   contentType: string;
@@ -74,12 +76,21 @@ export function parseVirtualConversationMessage(
     }
   }
 
+  const channel = linkContext?.channels?.get(sourceConversationId);
+  const reference = parseMessageReference(msg.secondaryReferenceId);
+  const isChannel = channel?.conversationType === 'channel';
+  const parentMessageId = reference?.kind === 'thread' ? reference.messageId
+    : reference && isChannel ? linkContext?.messageRoots?.get(messageReferenceKey(reference))
+    : typeof msg.rootMessageId === 'string' ? msg.rootMessageId : undefined;
+
   // Build message link to original message
-  const messageLink = sourceConversationId && sourceReferenceId
+  const messageLink = sourceConversationId && sourceReferenceId && hasReliableLinkContext(sourceConversationId, channel) && (!isChannel || parentMessageId)
     ? buildMessageLink({
         conversationId: sourceConversationId,
         messageId: sourceReferenceId,
         tenantId: linkContext?.tenantId,
+        channel,
+        parentMessageId,
         teamsBaseUrl: linkContext?.teamsBaseUrl,
       })
     : undefined;
@@ -97,6 +108,7 @@ export function parseVirtualConversationMessage(
     },
     timestamp,
     sourceConversationId,
+    ...(channel ?? {}),
     sourceReferenceId,
     messageLink,
     links: links.length > 0 ? links : undefined,

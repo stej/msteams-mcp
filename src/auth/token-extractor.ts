@@ -15,6 +15,7 @@ import {
   type SessionState,
 } from './session-store.js';
 import { parseJwtProfile, type UserProfile } from '../utils/parsers.js';
+import { isTeamsUrl, isTeamsCookieDomain } from '../security/network-policy.js';
 import { MRI_TYPE_PREFIX, ORGID_PREFIX, MRI_ORGID_PREFIX, ASSIGNMENTS_APP_ID, GRAPH_AUDIENCES } from '../constants.js';
 
 // ============================================================================
@@ -285,7 +286,10 @@ export function extractRegionConfig(state?: SessionState): RegionConfig | null {
       const chatServiceUrl = data.item?.chatServiceAfd;
       const csaServiceUrl = data.item?.chatSvcAggAfd;
       
-      if (!chatServiceUrl) continue;
+      if (!chatServiceUrl || !isTeamsUrl(chatServiceUrl)) continue;
+      const serviceOrigin = new URL(chatServiceUrl).origin;
+      if ([middleTierUrl, csaServiceUrl].some(value => value &&
+        (!isTeamsUrl(value) || new URL(value).origin !== serviceOrigin))) continue;
 
       // Extract Teams base URL from any of the URLs (chatServiceAfd is reliable)
       let teamsBaseUrl = 'https://teams.microsoft.com'; // fallback
@@ -350,7 +354,7 @@ export function extractMessageAuth(state?: SessionState): MessageAuthInfo | null
   if (!sessionState) return null;
 
   const cookies = sessionState.cookies ?? [];
-  const teamsCookies = cookies.filter(c => c.domain?.includes('teams.microsoft.com'));
+  const teamsCookies = cookies.filter(c => isTeamsCookieDomain(c.domain));
 
   // Extract the two required cookies
   const skypeToken = teamsCookies.find(c => c.name === 'skypetoken_asm')?.value ?? null;
@@ -389,7 +393,7 @@ export function getMessageAuthStatus(): {
 
   const cookies = sessionState.cookies ?? [];
   const skypeToken = cookies.find(
-    c => c.domain?.includes('teams.microsoft.com') && c.name === 'skypetoken_asm'
+    c => isTeamsCookieDomain(c.domain) && c.name === 'skypetoken_asm'
   )?.value;
 
   if (!skypeToken) {
@@ -440,7 +444,7 @@ export function extractCsaToken(state?: SessionState): string | null {
   const sessionState = state ?? readSessionState();
   if (!sessionState) return null;
 
-  for (const origin of sessionState.origins ?? []) {
+  for (const origin of (sessionState.origins ?? []).filter(o => isTeamsUrl(o.origin))) {
     for (const item of origin.localStorage ?? []) {
       // Skip temporary entries, look for chatsvcagg tokens
       if (item.name.startsWith('tmp.')) continue;

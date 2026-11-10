@@ -10,6 +10,7 @@ import {
   type McpError,
 } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
+import { isAllowedApiUrl } from '../security/network-policy.js';
 
 /** Options for HTTP requests. */
 export interface HttpOptions extends Omit<RequestInit, 'signal'> {
@@ -47,6 +48,10 @@ export async function httpRequest<T = unknown>(
     retryMaxDelayMs = 10000,
     ...fetchOptions
   } = options;
+
+  if (!isAllowedApiUrl(url)) {
+    return err(createError(ErrorCode.ACCESS_DENIED, 'The API destination is not allowed.', { retryable: false }));
+  }
 
   // Check rate limit state
   if (rateLimitedUntil && Date.now() < rateLimitedUntil) {
@@ -94,11 +99,11 @@ export async function httpRequest<T = unknown>(
       
       await sleep(delay);
       
-    } catch (error) {
+    } catch {
       // Unexpected errors
       lastError = createError(
         ErrorCode.UNKNOWN,
-        error instanceof Error ? error.message : String(error),
+        'HTTP request failed.',
         { retryable: false }
       );
       
@@ -125,6 +130,7 @@ async function fetchWithTimeout<T>(
   try {
     const response = await fetch(url, {
       ...options,
+      redirect: 'error',
       signal: controller.signal,
     });
 
@@ -137,7 +143,7 @@ async function fetchWithTimeout<T>(
       
       return err(createError(
         classifyHttpError(response.status, errorText),
-        `HTTP ${response.status}: ${errorText || response.statusText}`,
+        `HTTP ${response.status}`,
         { retryAfterMs }
       ));
     }
@@ -176,7 +182,7 @@ async function fetchWithTimeout<T>(
           error.message.includes('ENOTFOUND')) {
         return err(createError(
           ErrorCode.NETWORK_ERROR,
-          error.message,
+          'Network request failed.',
           { retryable: true }
         ));
       }
@@ -184,7 +190,7 @@ async function fetchWithTimeout<T>(
 
     return err(createError(
       ErrorCode.UNKNOWN,
-      error instanceof Error ? error.message : String(error),
+      'HTTP request failed.',
       { retryable: false }
     ));
   }

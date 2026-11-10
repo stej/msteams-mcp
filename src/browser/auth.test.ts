@@ -49,6 +49,19 @@ describe('getAuthStatus', () => {
     expect(status.isAuthenticated).toBe(false);
   });
 
+  it('does not treat a lookalike or credential-bearing URL as a login page', async () => {
+    for (const url of [
+      'https://login.microsoftonline.com.collector.invalid/',
+      'https://collector.invalid/?next=login.microsoftonline.com',
+      'https://user:secret@login.microsoftonline.com/',
+      'http://login.microsoftonline.com/',
+    ]) {
+      expect(await getAuthStatus(fakePage(url, 99))).toMatchObject({
+        isAuthenticated: false, isOnLoginPage: false,
+      });
+    }
+  });
+
   it('reports the login page', async () => {
     const status = await getAuthStatus(fakePage('https://login.microsoftonline.com/common/oauth2', 99));
 
@@ -57,6 +70,18 @@ describe('getAuthStatus', () => {
 });
 
 describe('ensureAuthenticated', () => {
+  it('does not include an unexpected URL in headless errors', async () => {
+    const page = {
+      goto: async () => null,
+      waitForURL: async () => { throw new Error('timeout'); },
+      url: () => 'https://collector.invalid/?token=SYNTHETIC_SECRET',
+    } as unknown as Page;
+    await expect(ensureAuthenticated(page, {} as never, () => {}, false, true))
+      .rejects.toThrow('Headless SSO failed: Unexpected page state');
+    await expect(ensureAuthenticated(page, {} as never, () => {}, false, true))
+      .rejects.not.toThrow('SYNTHETIC_SECRET');
+  });
+
   it('keeps a visible browser open for sign-in when Teams loads with expired tokens', async () => {
     // Teams can render without redirecting to login while the Microsoft SSO
     // session is gone; only a fresh MSAL token proves the user has signed in.

@@ -19,7 +19,6 @@
  */
 
 import { open, unlink } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -29,6 +28,8 @@ import { type Result, ok, err } from '../types/result.js';
 import { ErrorCode, createError } from '../types/errors.js';
 import { requireGraphTokenAsync } from '../utils/auth-guards.js';
 import { invalidateAccessToken } from '../auth/token-extractor.js';
+import { resolveDownloadPath, prepareDownloadDirectory } from '../security/download-policy.js';
+import { parseHttpsUrl } from '../security/network-policy.js';
 import { DOWNLOAD_INACTIVITY_TIMEOUT_MS } from '../constants.js';
 
 /** Graph drive items are requested as-is; the Graph token only ever goes to Graph. */
@@ -79,8 +80,10 @@ export async function downloadFile(url: string, outputPath: string): Promise<Res
     return err(createError(ErrorCode.INVALID_INPUT,
       'url must be a Microsoft Graph drive-item URL (https://graph.microsoft.com/v1.0/drives/{id}/items/{id}) or an HTTPS SharePoint/OneDrive file URL (*.sharepoint.com)'));
   }
-  if (!isAbsolute(outputPath)) {
-    return err(createError(ErrorCode.INVALID_INPUT, 'outputPath must be an absolute file path'));
+  try {
+    outputPath = resolveDownloadPath(outputPath);
+  } catch {
+    return err(createError(ErrorCode.INVALID_INPUT, 'The download destination is outside the protected local directory.', { retryable: false }));
   }
 
   const tokenResult = await requireGraphTokenAsync();
@@ -117,7 +120,7 @@ export async function downloadFile(url: string, outputPath: string): Promise<Res
   }
   const downloadUrl = item['@microsoft.graph.downloadUrl'];
   let downloadHost = '';
-  try { downloadHost = downloadUrl ? new URL(downloadUrl).hostname : ''; } catch { /* handled below */ }
+  try { downloadHost = downloadUrl ? parseHttpsUrl(downloadUrl)?.hostname ?? '' : ''; } catch { /* handled below */ }
   if (!downloadUrl?.startsWith('https://') || !SHAREPOINT_HOST.test(downloadHost)) {
     return err(createError(ErrorCode.API_ERROR, 'Microsoft Graph did not return a SharePoint download link for this file', { retryable: false }));
   }
@@ -142,11 +145,12 @@ async function streamToFile(
   let file;
   try {
     // Exclusive creation: never overwrite an existing file or follow a symlink.
+    prepareDownloadDirectory();
     file = await open(outputPath, 'wx', 0o600);
-  } catch (error) {
+  } catch {
     return err(createError(ErrorCode.INVALID_INPUT,
-      `Could not create ${outputPath}: ${error instanceof Error ? error.message : String(error)}`,
-      { retryable: false, suggestions: ['The parent directory must exist and the file must not already exist'] }));
+      `Could not create the download file in the protected local directory.`,
+      { retryable: false, suggestions: ['Use a new filename directly inside the protected downloads directory'] }));
   }
 
   const controller = new AbortController();
@@ -181,12 +185,12 @@ async function streamToFile(
     }
     complete = true;
     return ok({ size, sha256: hash.digest('hex'), contentType: response.headers.get('content-type') ?? undefined });
-  } catch (error) {
+  } catch {
     const timedOut = controller.signal.aborted;
     return err(createError(timedOut ? ErrorCode.TIMEOUT : ErrorCode.NETWORK_ERROR,
       timedOut
         ? `File download stalled for ${DOWNLOAD_INACTIVITY_TIMEOUT_MS / 1000}s and was cancelled`
-        : `File download failed: ${error instanceof Error ? error.message : String(error)}`,
+        : `File download failed.`,
       { retryable: true }));
   } finally {
     clearTimeout(timer);

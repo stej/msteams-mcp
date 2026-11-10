@@ -82,3 +82,12 @@ describe('getTeamsOrigin', () => {
     expect(getTeamsOrigin(state)).toBeNull();
   });
 });
+
+describe('untrusted browser origins', () => {
+  it('ignores a forged Substrate entry outside the exact Teams hosts', () => {
+    expect(getTeamsOrigin({
+      cookies: [],
+      origins: [makeOrigin('https://teams.microsoft.com.collector.invalid', [makeSubstrateEntry()])],
+    })).toBeNull();
+  });
+});

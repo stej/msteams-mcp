@@ -4,9 +4,9 @@
  * Handles reading and writing session state with:
  * - Encryption at rest
  * - Restricted file permissions
- * - Automatic migration from plaintext
+ * - Refuses legacy credential formats
  * 
- * Session files are stored in a user-specific config directory (~/.teams-mcp-server/)
+ * Session files are stored in a user-specific config directory (~/.msteams-mcp-secure/)
  * to ensure consistency regardless of how the server is invoked (npx, global install, etc.).
  */
 
@@ -16,15 +16,17 @@ import * as path from 'path';
 import { encrypt, decrypt } from './crypto.js';
 import { SESSION_EXPIRY_HOURS, TEAMS_HOSTS } from '../constants.js';
 import * as log from '../utils/logger.js';
+import { isTeamsUrl } from '../security/network-policy.js';
+import { assertLocalPath, secureDirectory } from '../security/windows-protection.js';
 
 /**
  * User-specific config directory for teams-mcp-server.
- * - Windows: %APPDATA%\teams-mcp-server\
- * - macOS/Linux: ~/.teams-mcp-server/
+ * - Windows: %USERPROFILE%\AppData\Local\msteams-mcp\
+ * - macOS/Linux: ~/.msteams-mcp-secure/
  */
 export const CONFIG_DIR = process.platform === 'win32'
-  ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'teams-mcp-server')
-  : path.join(os.homedir(), '.teams-mcp-server');
+  ? path.join(os.homedir(), 'AppData', 'Local', 'msteams-mcp')
+  : path.join(os.homedir(), '.msteams-mcp-secure');
 export const SESSION_STATE_PATH = path.join(CONFIG_DIR, 'session-state.json');
 export const TOKEN_CACHE_PATH = path.join(CONFIG_DIR, 'token-cache.json');
 
@@ -34,8 +36,12 @@ const SECURE_FILE_MODE = 0o600;
 /**
  * Ensures the config directory exists with secure permissions.
  */
+let directorySecured = false;
 export function ensureConfigDir(): void {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  if (!directorySecured) {
+    secureDirectory(CONFIG_DIR);
+    directorySecured = true;
+  }
 }
 
 /** Session state as stored by Playwright. */
@@ -63,10 +69,18 @@ export interface TokenCache {
   extractedAt: number;
 }
 
+/** Never follow an unchecked file or parent link, even for an existence check. */
+function existsLocalFile(filePath: string): boolean {
+  assertLocalPath(filePath);
+  return fs.existsSync(filePath);
+}
+
 /**
  * Writes data securely with encryption and file permissions.
  */
 function writeSecure(filePath: string, data: unknown): void {
+  assertLocalPath(filePath);
+  ensureConfigDir();
   const json = JSON.stringify(data, null, 2);
   const encrypted = encrypt(json);
   
@@ -81,11 +95,13 @@ function writeSecure(filePath: string, data: unknown): void {
  * (different machine, corrupted).
  */
 function readSecure<T>(filePath: string): T | null {
-  if (!fs.existsSync(filePath)) return null;
   try {
+    if (!existsLocalFile(filePath)) return null;
+    ensureConfigDir();
+    if (fs.lstatSync(filePath).isSymbolicLink()) throw new Error('Linked credential files are not allowed.');
     return JSON.parse(decrypt(JSON.parse(fs.readFileSync(filePath, 'utf8')))) as T;
-  } catch (error) {
-    log.error('session-store', `Failed to read ${filePath}: ${error instanceof Error ? error.message : error}`);
+  } catch {
+    log.error('session-store', 'Credential cache could not be read or decrypted.');
     return null;
   }
 }
@@ -94,7 +110,7 @@ function readSecure<T>(filePath: string): T | null {
  * Checks if session state file exists.
  */
 export function hasSessionState(): boolean {
-  return fs.existsSync(SESSION_STATE_PATH);
+  return existsLocalFile(SESSION_STATE_PATH);
 }
 
 /**
@@ -108,7 +124,6 @@ export function readSessionState(): SessionState | null {
  * Writes the session state securely.
  */
 export function writeSessionState(state: SessionState): void {
-  ensureConfigDir();
   writeSecure(SESSION_STATE_PATH, state);
 }
 
@@ -116,17 +131,18 @@ export function writeSessionState(state: SessionState): void {
  * Deletes the session state file.
  */
 export function clearSessionState(): void {
-  if (fs.existsSync(SESSION_STATE_PATH)) {
+  if (existsLocalFile(SESSION_STATE_PATH)) {
     fs.unlinkSync(SESSION_STATE_PATH);
   }
 }
 
 /**
- * Deletes everything stored locally: browser profile (cookies, MSAL caches,
- * every account ever signed in), session state and token cache.
+ * Deletes protected credentials while preserving downloaded user files.
  */
 export function clearAllLocalData(): void {
-  fs.rmSync(CONFIG_DIR, { recursive: true, force: true });
+  clearSessionState();
+  clearTokenCache();
+  directorySecured = false;
 }
 
 /**
@@ -162,7 +178,6 @@ export function readTokenCache(): TokenCache | null {
  * Writes the token cache securely.
  */
 export function writeTokenCache(cache: TokenCache): void {
-  ensureConfigDir();
   writeSecure(TOKEN_CACHE_PATH, cache);
 }
 
@@ -170,7 +185,7 @@ export function writeTokenCache(cache: TokenCache): void {
  * Clears the token cache.
  */
 export function clearTokenCache(): void {
-  if (fs.existsSync(TOKEN_CACHE_PATH)) {
+  if (existsLocalFile(TOKEN_CACHE_PATH)) {
     fs.unlinkSync(TOKEN_CACHE_PATH);
   }
 }
@@ -216,15 +231,16 @@ function hasSubstrateSearchToken(
 export function getTeamsOrigin(state: SessionState): SessionState['origins'][number] | null {
   if (!state.origins) return null;
 
-  const withSubstrate = state.origins.find(o => hasSubstrateSearchToken(o.localStorage));
+  const trustedOrigins = state.origins.filter(o => isTeamsUrl(o.origin));
+  const withSubstrate = trustedOrigins.find(o => hasSubstrateSearchToken(o.localStorage));
   if (withSubstrate) return withSubstrate;
 
   // Try known Teams origins in priority order
   for (const knownOrigin of TEAMS_ORIGINS) {
-    const origin = state.origins.find(o => o.origin === knownOrigin);
+    const origin = trustedOrigins.find(o => o.origin === knownOrigin);
     if (origin) return origin;
   }
 
   // Fallback: any origin on a known Teams host
-  return state.origins.find(o => TEAMS_HOSTS.some(host => o.origin.includes(host))) ?? null;
+  return null;
 }

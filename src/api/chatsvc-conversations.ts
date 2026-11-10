@@ -9,7 +9,9 @@ import { httpRequest } from '../utils/http.js';
 import { CHATSVC_API, getSkypeAuthHeaders } from '../utils/api-config.js';
 import { type Result, ok } from '../types/result.js';
 import { requireMessageAuthWithConfig } from '../utils/auth-guards.js';
-import { stripHtml } from '../utils/parsers.js';
+import { stripHtml, extractObjectId, getConversationType } from '../utils/parsers.js';
+import { resolveNames } from './profile-api.js';
+import { loadChannelContexts } from './channel-context.js';
 import { DEFAULT_THREAD_LIMIT } from '../constants.js';
 
 /** Maximum length of a last-message preview before truncation. */
@@ -18,9 +20,12 @@ const PREVIEW_MAX_LENGTH = 120;
 /** A summarised conversation as returned by the chat list. */
 export interface ChatSummary {
   conversationId: string;
-  /** Channel/group topic, or empty for 1:1 chats. */
+  /** Channel/group topic, or the other participant display name for an unnamed 1:1 chat when resolved. */
   topic: string;
   chatType: 'channel' | 'meeting' | 'group' | 'oneOnOne' | 'chat';
+  teamName?: string;
+  channelName?: string;
+  teamId?: string;
   /** ISO timestamp of the last message, or empty if unknown. */
   lastMessageTime: string;
   /** Display name of the last message's sender. */
@@ -35,9 +40,9 @@ export interface GetConversationsResult {
 }
 
 /** Classifies a conversation type from its ID. */
-function classifyChatType(id: string): ChatSummary['chatType'] {
-  if (id.includes('meeting_')) return 'meeting';
-  if (id.includes('@thread.tacv2')) return 'channel';
+function classifyChatType(id: string, properties: Record<string, unknown>): ChatSummary['chatType'] {
+  const type = getConversationType(id, properties);
+  if (type === 'channel' || type === 'meeting') return type;
   if (id.includes('@unq.gbl.spaces')) return 'oneOnOne';
   if (id.includes('@thread.v2')) return 'group';
   return 'chat';
@@ -59,7 +64,10 @@ export function parseConversation(raw: Record<string, unknown>): ChatSummary | n
   if (!id) return null;
 
   const threadProperties = (raw.threadProperties ?? {}) as Record<string, unknown>;
-  const topic = typeof threadProperties.topic === 'string' ? threadProperties.topic : '';
+  const chatType = classifyChatType(id, threadProperties);
+  const topic = chatType === 'channel' && typeof threadProperties.topicThreadTopic === 'string'
+    ? threadProperties.topicThreadTopic
+    : typeof threadProperties.topic === 'string' ? threadProperties.topic : '';
 
   const lastMessage = (raw.lastMessage ?? {}) as Record<string, unknown>;
   const lastMessageTime =
@@ -73,7 +81,12 @@ export function parseConversation(raw: Record<string, unknown>): ChatSummary | n
   return {
     conversationId: id,
     topic,
-    chatType: classifyChatType(id),
+    chatType,
+    ...(chatType === 'channel' ? {
+      channelName: topic || undefined,
+      teamName: typeof threadProperties.spaceThreadTopic === 'string' ? threadProperties.spaceThreadTopic : undefined,
+      teamId: typeof threadProperties.groupId === 'string' ? threadProperties.groupId : undefined,
+    } : {}),
     lastMessageTime,
     lastMessageFrom,
     lastMessagePreview: truncatePreview(stripHtml(rawContent)),
@@ -114,6 +127,38 @@ export async function getConversations(
     .map(c => parseConversation(c as Record<string, unknown>))
     .filter((c): c is ChatSummary => c !== null)
     .slice(0, limit);
+
+  const channels = await loadChannelContexts(conversations.map(conversation => conversation.conversationId));
+  for (const conversation of conversations) {
+    const channel = channels.get(conversation.conversationId);
+    if (channel?.conversationType === 'channel') {
+      Object.assign(conversation, channel, { teamId: channel.teamId ?? conversation.teamId });
+      conversation.chatType = 'channel';
+      conversation.topic = channel.channelName ?? conversation.topic;
+    }
+  }
+  // Resolve unnamed 1:1 chats only when the signed-in user is a participant.
+  const ownId = extractObjectId(auth.userMri);
+  const peers = new Map<ChatSummary, string>();
+  if (ownId) {
+    for (const conversation of conversations) {
+      if (conversation.chatType !== 'oneOnOne' || conversation.topic.trim()) continue;
+      const match = /^19:([^_]+)_([^_]+)@unq\.gbl\.spaces$/i.exec(conversation.conversationId);
+      if (!match) continue;
+      const first = extractObjectId(match[1]);
+      const second = extractObjectId(match[2]);
+      if (!first || !second) continue;
+      const peerId = first === ownId ? second : second === ownId ? first : null;
+      if (peerId) peers.set(conversation, `8:orgid:${peerId}`);
+    }
+  }
+  if (peers.size > 0) {
+    const names = await resolveNames([...new Set(peers.values())]);
+    for (const [conversation, mri] of peers) {
+      const name = names.get(mri);
+      if (name) conversation.topic = name;
+    }
+  }
 
   return ok({ conversations });
 }

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { httpRequest } from '../utils/http.js';
 import { requireGraphTokenAsync } from '../utils/auth-guards.js';
@@ -12,6 +12,14 @@ import { ErrorCode, createError } from '../types/errors.js';
 import { downloadFile } from './graph-files-api.js';
 
 vi.mock('../utils/http.js', () => ({ httpRequest: vi.fn() }));
+vi.mock('../security/download-policy.js', () => ({
+  resolveDownloadPath: (value: string) => {
+    if (!isAbsolute(value)) throw new Error('relative path');
+    return value;
+  },
+  prepareDownloadDirectory: vi.fn(),
+}));
+
 vi.mock('../utils/auth-guards.js', () => ({ requireGraphTokenAsync: vi.fn() }));
 vi.mock('../auth/token-extractor.js', () => ({ invalidateAccessToken: vi.fn() }));
 
@@ -55,7 +63,7 @@ describe('downloadFile', () => {
       sha256: createHash('sha256').update(BYTES).digest('hex'),
     }));
     expect(await readFile(out)).toEqual(BYTES);
-    expect((await stat(out)).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect((await stat(out)).mode & 0o777).toBe(0o600);
     const [metaUrl, metaOpts] = mockHttp.mock.calls[0];
     expect(new URL(metaUrl as string).searchParams.get('$select')).toContain('content.downloadUrl');
     expect((metaOpts as { headers: Record<string, string> }).headers.Authorization).toBe('Bearer graph-token');

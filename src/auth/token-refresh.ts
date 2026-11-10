@@ -2,7 +2,7 @@
  * Token refresh orchestrator.
  * 
  * Tries HTTP-based refresh first (direct OAuth2 token endpoint call, ~100ms),
- * then falls back to headless browser refresh (~8s) if HTTP fails.
+ * then falls back to headless browser refresh only in fullAccess mode.
  * 
  * HTTP refresh works by extracting the MSAL refresh token from session state
  * and exchanging it for new access tokens via Azure AD's token endpoint.
@@ -30,6 +30,7 @@ import { refreshTokensViaHttp, type OnDemandResource } from './token-refresh-htt
 import { createBrowserContext, closeBrowser } from '../browser/context.js';
 import { ensureAuthenticated } from '../browser/auth.js';
 import * as log from '../utils/logger.js';
+import { isReadOnly } from '../security/access-policy.js';
 
 /** Serialize refreshes because both HTTP and browser flows replace session state. */
 let refreshQueue: Promise<unknown> = Promise.resolve();
@@ -41,7 +42,7 @@ function serializeRefresh<T>(refresh: () => Promise<T>): Promise<T> {
   return pending;
 }
 
-/** Refresh core Teams credentials, with browser fallback. */
+/** Refresh core Teams credentials; automatic browser fallback requires fullAccess. */
 export function refreshTokensViaBrowser(): Promise<Result<void>> {
   if (!coreRefresh) {
     coreRefresh = serializeRefresh(refreshCoreTokens).finally(() => { coreRefresh = undefined; });
@@ -87,6 +88,18 @@ async function refreshCoreTokens(): Promise<Result<void>> {
   const httpResult = await refreshTokensViaHttp();
   if (httpResult.ok && extractSubstrateToken()) return ok(undefined);
 
+  if (isReadOnly()) {
+    // Preserve HTTP failure semantics without loading the Teams web application.
+    if (!httpResult.ok) return httpResult;
+    return err(createError(
+      ErrorCode.AUTH_INTERACTION_REQUIRED,
+      'HTTP token refresh did not yield a usable token. Automatic browser fallback is disabled in readOnly mode.',
+      { retryable: false, suggestions: [
+        'Authenticate with teams_login only when the user explicitly authorizes sign-in',
+      ] },
+    ));
+  }
+
   log.warn('token-refresh', httpResult.ok
     ? 'HTTP refresh reported success but no valid Substrate token found, falling back to browser'
     : `HTTP refresh failed: ${httpResult.error.message}, falling back to browser (session cookies may still be valid)`);
@@ -96,7 +109,7 @@ async function refreshCoreTokens(): Promise<Result<void>> {
 }
 
 /**
- * Opens a headless browser with the persistent profile and lets MSAL
+ * Opens a nonpersistent headless browser context and lets MSAL
  * silently refresh tokens using its session cookies.
  */
 async function refreshViaHeadlessBrowser(): Promise<Result<void>> {

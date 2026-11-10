@@ -10,7 +10,15 @@ export interface ExtractedLink {
   contentType?: string;
 }
 
-export interface TeamsSearchResult {
+/** Verified channel location; absent fields remain unknown. */
+export interface ChannelContext {
+  /** Authenticated metadata distinguishes verified chats from an unknown legacy ID. */
+  conversationType?: 'channel' | 'chat' | 'meeting';
+  teamId?: string;
+  teamName?: string;
+  channelName?: string;
+}
+export interface TeamsSearchResult extends ChannelContext {
   id: string;
   type: 'message' | 'file' | 'person';
   content: string;
@@ -20,6 +28,8 @@ export interface TeamsSearchResult {
   teamName?: string;
   conversationId?: string;
   messageId?: string;
+  /** Root post for a reply within a channel thread. */
+  threadRootId?: string;
   /** Direct link to open this message in Teams */
   messageLink?: string;
   /** Links extracted from message content */

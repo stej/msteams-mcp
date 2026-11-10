@@ -1,3 +1,7 @@
+import { parseMessageReference, messageReferenceKey, hasReliableLinkContext } from '../utils/parsers-identifiers.js';
+import { loadChannelContexts, loadChannelMessageRoots } from './channel-context.js';
+import type { ChannelContext } from '../types/teams.js';
+
 /**
  * Chat Service API - Activity feed operations.
  * 
@@ -20,7 +24,7 @@ import type { RawChatsvcMessage } from '../types/api-responses.js';
 export type ActivityType = 'mention' | 'reaction' | 'reply' | 'message' | 'unknown';
 
 /** An activity item from the notifications feed. */
-export interface ActivityItem {
+export interface ActivityItem extends ChannelContext {
   /** Activity/message ID. */
   id: string;
   /** Type of activity (mention, reaction, reply, etc.). */
@@ -38,6 +42,8 @@ export interface ActivityItem {
   timestamp: string;
   /** The source conversation ID (where the activity happened). */
   conversationId?: string;
+  /** ID in the source conversation, distinct from the notification ID. */
+  sourceMessageId?: string;
   /** The conversation/thread topic name. */
   topic?: string;
   /** Direct link to the activity in Teams. */
@@ -151,6 +157,15 @@ export async function getActivityFeed(
     });
   }
 
+  const references = rawMessages.flatMap(raw => {
+    const reference = parseMessageReference((raw as RawChatsvcMessage).secondaryReferenceId);
+    return reference ? [reference] : [];
+  });
+  const channels = await loadChannelContexts(rawMessages.flatMap(raw => {
+    const message = raw as RawChatsvcMessage;
+    return [parseMessageReference(message.secondaryReferenceId)?.conversationId, message.clumpId, message.conversationid, message.conversationId].filter((id): id is string => typeof id === 'string');
+  }));
+  const messageRoots = await loadChannelMessageRoots(references, channels);
   const activities: ActivityItem[] = [];
 
   for (const raw of rawMessages) {
@@ -186,18 +201,27 @@ export async function getActivityFeed(
     
     // Use clumpId if conversationid is a virtual conversation (48:xxx format)
     const isVirtualConversation = rawConversationId?.startsWith(VIRTUAL_CONVERSATION_PREFIX);
-    const conversationId = (isVirtualConversation && clumpId) ? clumpId : rawConversationId;
+    const reference = parseMessageReference(msg.secondaryReferenceId);
+    const conversationId = reference?.conversationId ?? ((isVirtualConversation && clumpId) ? clumpId : rawConversationId);
+    const sourceMessageId = reference?.messageId ?? (!isVirtualConversation && !clumpId ? id : undefined);
     
+    const channel = conversationId ? channels.get(conversationId) : undefined;
+    const isChannel = channel?.conversationType === 'channel';
+    const parentMessageId = reference?.kind === 'thread' ? reference.messageId
+      : reference && isChannel ? messageRoots.get(messageReferenceKey(reference))
+      : msg.rootMessageId ?? msg.parentMessageId;
     const topic = msg.threadtopic || msg.topic;
 
     // Build activity link if we have a valid source conversation context
     // Skip virtual conversations (48:xxx) as they don't produce working deep links
     let activityLink: string | undefined;
-    if (conversationId && !conversationId.startsWith(VIRTUAL_CONVERSATION_PREFIX) && /^\d+$/.test(id)) {
+    if (conversationId && sourceMessageId && hasReliableLinkContext(conversationId, channel) && (!isChannel || !reference || parentMessageId) && !conversationId.startsWith(VIRTUAL_CONVERSATION_PREFIX) && /^\d+$/.test(sourceMessageId)) {
       activityLink = buildMessageLink({
         conversationId,
-        messageId: id,
+        messageId: sourceMessageId,
         tenantId: getTenantId() ?? undefined,
+        channel,
+        parentMessageId,
         teamsBaseUrl: getTeamsBaseUrl(),
       });
     }
@@ -218,6 +242,8 @@ export async function getActivityFeed(
       },
       timestamp,
       conversationId,
+      sourceMessageId,
+      ...(channel ?? {}),
       topic,
       activityLink,
       links: links.length > 0 ? links : undefined,

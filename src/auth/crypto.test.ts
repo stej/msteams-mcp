@@ -1,64 +1,24 @@
-/**
- * Unit tests for encryption utilities.
- */
+import { describe, expect, it } from 'vitest';
+import { encrypt, decrypt } from './crypto.js';
 
-import { describe, it, expect } from 'vitest';
-import { encrypt, decrypt, type EncryptedData } from './crypto.js';
+describe('Windows DPAPI credentials', () => {
+  it.each(['', 'SYNTHETIC_ONLY', '{"refreshToken":"SYNTHETIC_ONLY"}', 'Příliš žluťoučký 🐎'])(
+    'round-trips synthetic content without a machine-name key', plaintext => {
+      const encrypted = encrypt(plaintext);
+      expect(encrypted.version).toBe(2);
+      expect(decrypt(encrypted)).toBe(plaintext);
+      expect(encrypted.content).not.toBe(plaintext);
+    },
+  );
 
-describe('encrypt/decrypt round-trip', () => {
-  it('encrypts and decrypts a simple string', () => {
-    const plaintext = 'hello world';
-    const encrypted = encrypt(plaintext);
-    const decrypted = decrypt(encrypted);
-    expect(decrypted).toBe(plaintext);
+  it('rejects a modified DPAPI blob', () => {
+    const encrypted = encrypt('SYNTHETIC_ONLY');
+    const bytes = Buffer.from(encrypted.content, 'base64');
+    bytes[Math.floor(bytes.length / 2)] ^= 1;
+    expect(() => decrypt({ version: 2, content: bytes.toString('base64') })).toThrow();
   });
 
-  it('encrypts and decrypts JSON data', () => {
-    const data = JSON.stringify({ token: 'abc123', expiry: 1705850000 });
-    const encrypted = encrypt(data);
-    const decrypted = decrypt(encrypted);
-    expect(decrypted).toBe(data);
-  });
-
-  it('encrypts and decrypts empty string', () => {
-    const encrypted = encrypt('');
-    const decrypted = decrypt(encrypted);
-    expect(decrypted).toBe('');
-  });
-
-  it('encrypts and decrypts unicode content', () => {
-    const text = 'Hello 🌍 — "quotes" & <tags>';
-    const encrypted = encrypt(text);
-    const decrypted = decrypt(encrypted);
-    expect(decrypted).toBe(text);
-  });
-
-  it('produces different ciphertext for same plaintext (unique IV)', () => {
-    const plaintext = 'same input';
-    const encrypted1 = encrypt(plaintext);
-    const encrypted2 = encrypt(plaintext);
-    // IVs should differ, so ciphertext differs
-    expect(encrypted1.iv).not.toBe(encrypted2.iv);
-    expect(encrypted1.content).not.toBe(encrypted2.content);
-  });
-});
-
-describe('decrypt error handling', () => {
-  it('throws on tampered ciphertext', () => {
-    const encrypted = encrypt('secret');
-    const tampered: EncryptedData = {
-      ...encrypted,
-      content: encrypted.content.slice(0, -2) + 'xx',
-    };
-    expect(() => decrypt(tampered)).toThrow();
-  });
-
-  it('throws on tampered auth tag', () => {
-    const encrypted = encrypt('secret');
-    const tampered: EncryptedData = {
-      ...encrypted,
-      tag: 'a'.repeat(encrypted.tag.length),
-    };
-    expect(() => decrypt(tampered)).toThrow();
+  it('refuses the old predictable-key format', () => {
+    expect(() => decrypt({ version: 1, content: '' })).toThrow(/Legacy/);
   });
 });

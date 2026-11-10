@@ -3,6 +3,7 @@
  */
 
 import { createRequire } from 'module';
+import { isReadOnly } from '../security/access-policy.js';
 import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { RegisteredTool, ToolResult } from './index.js';
@@ -97,6 +98,90 @@ async function fillCoreCredentialGaps(): Promise<void> {
   }
 }
 
+/** Fixed categories keep URLs, tokens and arbitrary browser error text out of diagnostics. */
+function loginFailureReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  if (message.startsWith('Authentication timeout:')) return 'manual-login-timeout';
+  if (message.includes('MSAL token refresh timed out')) return 'token-refresh-timeout';
+  if (message.includes('Target page, context or browser has been closed')) return 'browser-target-closed';
+  const networkError = /\bnet::(ERR_[A-Z0-9_]+)\b/.exec(message)?.[1];
+  if (networkError) {
+    const codes = new Set(['ERR_ABORTED', 'ERR_TIMED_OUT', 'ERR_NAME_NOT_RESOLVED',
+      'ERR_CONNECTION_REFUSED', 'ERR_CONNECTION_RESET', 'ERR_CONNECTION_CLOSED',
+      'ERR_INTERNET_DISCONNECTED', 'ERR_NETWORK_CHANGED', 'ERR_BLOCKED_BY_CLIENT',
+      'ERR_BLOCKED_BY_ADMINISTRATOR', 'ERR_CERT_AUTHORITY_INVALID',
+      'ERR_CERT_COMMON_NAME_INVALID', 'ERR_CERT_DATE_INVALID']);
+    return codes.has(networkError) ? networkError : 'network-error';
+  }
+  if (error instanceof Error && error.name === 'TimeoutError') return 'browser-timeout';
+  if (message.includes('Windows credential or local-path protection failed')) return 'credential-storage-failed';
+  return 'authentication-failed';
+}
+
+/** Authentication saves its own session. Cleanup must never save again or mask its failure. */
+async function authenticateInBrowser(headless: boolean): Promise<void> {
+  const mode = headless ? 'headless' : 'visible';
+  const phases = new Map([
+    ['Navigating to Teams...', 'navigation'],
+    ['Waiting for manual login...', 'sign-in'],
+    ['Authentication successful!', 'token-wait'],
+    ['Waiting for MSAL to refresh tokens...', 'token-wait'],
+    ['Teams loaded — saving session state.', 'session-save'],
+    ['Saving session state...', 'session-save'],
+    ['Session state saved.', 'authenticated'],
+  ]);
+  let phase = 'opening-browser';
+  let manager: Awaited<ReturnType<typeof createBrowserContext>> | undefined;
+  let contextClosed = false;
+  let closing = false;
+  let failure: Error | undefined;
+  log.info('login:' + mode, 'phase=' + phase);
+  try {
+    manager = await createBrowserContext({ headless });
+    const browser = manager.context.browser();
+    const lifecycle = (event: string) => {
+      const message = 'event=' + event + '; expected=' + closing + '; phase=' + phase;
+      if (closing) log.info('login:' + mode, message);
+      else log.warn('login:' + mode, message);
+    };
+    manager.page.on('close', () => lifecycle('page-closed'));
+    manager.context.on('close', () => { contextClosed = true; lifecycle('context-closed'); });
+    browser?.on('disconnected', () => lifecycle('browser-disconnected'));
+    await ensureAuthenticated(manager.page, manager.context, message => {
+      const next = phases.get(message);
+      if (next && next !== phase) {
+        phase = next;
+        log.info('login:' + mode, 'phase=' + phase);
+      }
+    }, !headless, headless);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    const candidate = /^([A-Za-z]+\.[A-Za-z]+):/.exec(message)?.[1] ?? '';
+    const operations = new Set(['page.goto', 'page.waitForTimeout', 'page.evaluate', 'browserContext.storageState']);
+    const operation = operations.has(candidate) ? candidate : 'authentication';
+    const browser = manager?.context.browser();
+    const state = manager
+      ? '; pageClosed=' + manager.page.isClosed() + '; contextClosed=' + contextClosed
+        + '; browserDisconnected=' + (!browser || !browser.isConnected())
+      : '';
+    failure = new Error('Teams login failed: mode=' + mode + '; phase=' + phase
+      + '; operation=' + operation + '; reason=' + loginFailureReason(error) + state);
+    log.warn('login:' + mode, failure.message);
+  } finally {
+    closing = true;
+    phase = 'cleanup';
+    if (manager) {
+      try {
+        await closeBrowser(manager, false);
+      } catch {
+        log.warn('login:' + mode, 'phase=cleanup; reason=cleanup-failed');
+        failure ??= new Error('Teams login failed: mode=' + mode + '; phase=cleanup; reason=cleanup-failed');
+      }
+    }
+  }
+  if (failure) throw failure;
+}
+
 async function handleLogin(
   input: z.infer<typeof LoginInputSchema>,
 ): Promise<ToolResult> {
@@ -128,18 +213,10 @@ async function handleLogin(
   }
 
   // Headless-first strategy:
-  // The persistent browser profile retains Microsoft's long-lived session cookies,
-  // so headless SSO can succeed even without a session-state file.
-  const headless = await createBrowserContext({ headless: true });
+  // Restore Microsoft's session cookies from the protected storage state into
+  // a nonpersistent context. No reusable browser profile is retained.
   try {
-    await ensureAuthenticated(
-      headless.page,
-      headless.context,
-      (msg) => log.info('login:headless', msg),
-      false, // No overlay in headless
-      true   // Headless mode - throw immediately if user interaction required
-    );
-    await closeBrowser(headless, true);
+    await authenticateInBrowser(true);
     await fillCoreCredentialGaps();
 
     return {
@@ -148,9 +225,8 @@ async function handleLogin(
         message: 'Login completed silently via SSO. Session has been saved.',
       },
     };
-  } catch (error) {
-    log.warn('login:headless', `Headless SSO failed, falling back to visible browser: ${error instanceof Error ? error.message : String(error)}`);
-    await closeBrowser(headless, false).catch(() => {});
+  } catch {
+    log.warn('login:headless', 'Headless login did not complete; opening visible sign-in.');
   }
 
   return loginInVisibleBrowser();
@@ -158,13 +234,7 @@ async function handleLogin(
 
 /** Opens a visible browser for the user to sign in, then saves the session. */
 async function loginInVisibleBrowser(): Promise<ToolResult> {
-  const visible = await createBrowserContext({ headless: false });
-  try {
-    await ensureAuthenticated(visible.page, visible.context, (msg) => log.info('login', msg));
-  } finally {
-    // Close browser after login - we only need the saved session/tokens
-    await closeBrowser(visible, true);
-  }
+  await authenticateInBrowser(false);
 
   await fillCoreCredentialGaps();
 
@@ -184,6 +254,7 @@ async function handleStatus(): Promise<ToolResult> {
     success: true,
     data: {
       version: pkg.version,
+      accessMode: isReadOnly() ? 'readOnly' : 'fullAccess',
       directApi: {
         available: tokenStatus.hasToken,
         expiresAt: tokenStatus.expiresAt,

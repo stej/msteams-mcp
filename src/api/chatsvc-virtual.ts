@@ -1,3 +1,7 @@
+import { loadChannelContexts, loadChannelMessageRoots } from './channel-context.js';
+import { parseMessageReference } from '../utils/parsers-identifiers.js';
+import type { ChannelContext } from '../types/teams.js';
+
 /**
  * Chat Service API - Virtual conversation operations.
  * 
@@ -25,7 +29,7 @@ export interface SaveMessageResult {
 }
 
 /** A saved message from the virtual 48:saved conversation. */
-export interface SavedMessage {
+export interface SavedMessage extends ChannelContext {
   id: string;
   content: string;
   contentType: string;
@@ -48,7 +52,7 @@ export interface GetSavedMessagesResult {
 }
 
 /** A followed thread from the virtual 48:threads conversation. */
-export interface FollowedThread {
+export interface FollowedThread extends ChannelContext {
   id: string;
   content: string;
   contentType: string;
@@ -81,7 +85,7 @@ const SAVED_MESSAGE_PATTERN = /_M_(\d+)$/;
 const FOLLOWED_THREAD_PATTERN = /_P_(\d+)_Threads$/;
 
 /** Parsed item from a virtual conversation (saved messages or followed threads). */
-interface VirtualConversationItem {
+interface VirtualConversationItem extends ChannelContext {
   id: string;
   content: string;
   contentType: string;
@@ -134,7 +138,16 @@ async function fetchVirtualConversation(
     return ok([]);
   }
 
-  const linkContext = { tenantId: getTenantId() ?? undefined, teamsBaseUrl: getTeamsBaseUrl() };
+  const references = rawMessages.flatMap(raw => {
+    const reference = parseMessageReference((raw as Record<string, unknown>).secondaryReferenceId);
+    return reference ? [reference] : [];
+  });
+  const channels = await loadChannelContexts(rawMessages.flatMap(raw => {
+    const source = (raw as Record<string, unknown>).clumpId;
+    return typeof source === 'string' ? [source] : [];
+  }));
+  const messageRoots = await loadChannelMessageRoots(references, channels);
+  const linkContext = { tenantId: getTenantId() ?? undefined, teamsBaseUrl: getTeamsBaseUrl(), channels, messageRoots };
   const items: VirtualConversationItem[] = [];
 
   for (const raw of rawMessages) {
@@ -152,6 +165,9 @@ async function fetchVirtualConversation(
       sender: parsed.sender,
       timestamp: parsed.timestamp,
       sourceConversationId: parsed.sourceConversationId,
+      teamName: parsed.teamName,
+      channelName: parsed.channelName,
+      teamId: parsed.teamId,
       sourceReferenceId: parsed.sourceReferenceId,
       messageLink: parsed.messageLink,
     });

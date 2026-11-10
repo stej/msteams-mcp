@@ -1,3 +1,4 @@
+import { hasReliableLinkContext } from '../utils/parsers-identifiers.js';
 /**
  * Chat Service API - Messaging operations.
  * 
@@ -11,8 +12,10 @@ import { ErrorCode, createError } from '../types/errors.js';
 import { type Result, ok, err } from '../types/result.js';
 import { getUserDisplayName } from '../auth/token-extractor.js';
 import { requireMessageAuth, requireMessageAuthWithConfig, getTeamsBaseUrl, getTenantId } from '../utils/auth-guards.js';
-import { stripHtml, extractLinks, buildMessageLink, buildOneOnOneConversationId, extractObjectId, markdownToTeamsHtml, hasMarkdownFormatting, escapeHtmlChars, sanitizeLinkUrl, parseReactions, type ExtractedLink, type Reaction, type ReactionSummary } from '../utils/parsers.js';
+import { stripHtml, extractLinks, getConversationType, buildMessageLink, buildOneOnOneConversationId, extractObjectId, markdownToTeamsHtml, hasMarkdownFormatting, escapeHtmlChars, sanitizeLinkUrl, parseReactions, type ExtractedLink, type Reaction, type ReactionSummary } from '../utils/parsers.js';
 import { resolveNames } from './profile-api.js';
+import { loadChannelContexts } from './channel-context.js';
+import type { ChannelContext } from '../types/teams.js';
 import { SELF_CHAT_ID, MRI_ORGID_PREFIX, DEFAULT_WAIT_SECONDS, DEFAULT_WAIT_INTERVAL_SECONDS, MAX_WAIT_SECONDS } from '../constants.js';
 import { formatHumanReadableDate } from './chatsvc-common.js';
 import type { RawChatsvcMessage, RawConversationResponse, RawCreateThreadResponse } from '../types/api-responses.js';
@@ -30,7 +33,7 @@ export interface SendMessageResult {
 }
 
 /** A message from a thread/conversation. */
-export interface ThreadMessage {
+export interface ThreadMessage extends ChannelContext {
   id: string;
   content: string;
   contentType: string;
@@ -57,7 +60,7 @@ export interface ThreadMessage {
 }
 
 /** Result of getting thread messages. */
-export interface GetThreadResult {
+export interface GetThreadResult extends ChannelContext {
   conversationId: string;
   messages: ThreadMessage[];
   /** Opaque cursor for the next-older page; absent when there is no older history. */
@@ -353,6 +356,7 @@ export async function getMessage(
     return response;
   }
 
+  const channel = (await loadChannelContexts([conversationId])).get(conversationId);
   const msg = response.value.data;
 
   const id = msg.id || msg.originalarrivaltime;
@@ -375,13 +379,14 @@ export async function getMessage(
   const rootMessageId = msg.rootMessageId;
   const isThreadReply = !!rootMessageId && rootMessageId !== id;
 
-  const messageLink = /^\d+$/.test(id)
+  const messageLink = /^\d+$/.test(id) && hasReliableLinkContext(conversationId, channel)
     ? buildMessageLink({
         conversationId,
         messageId: id,
         tenantId: getTenantId() ?? undefined,
         parentMessageId: isThreadReply ? rootMessageId : undefined,
         teamsBaseUrl: getTeamsBaseUrl(),
+        channel,
       })
     : undefined;
 
@@ -404,6 +409,7 @@ export async function getMessage(
     timestamp,
     when: when || undefined,
     conversationId,
+    ...(channel ?? {}),
     clientMessageId: msg.clientmessageid,
     isFromMe: fromMri === auth.userMri,
     messageLink,
@@ -457,10 +463,12 @@ export async function getThreadMessages(
     return response;
   }
 
+  const channel = (await loadChannelContexts([conversationId])).get(conversationId);
   const rawMessages = response.value.data.messages;
   if (!Array.isArray(rawMessages) || rawMessages.length === 0) {
     return ok({
       conversationId,
+      ...(channel ?? {}),
       messages: [],
     });
   }
@@ -501,13 +509,14 @@ export async function getThreadMessages(
     const isThreadReply = !!rootMessageId && rootMessageId !== id;
 
     // Build message link with tenant context for reliable deep links
-    const messageLink = /^\d+$/.test(id)
+    const messageLink = /^\d+$/.test(id) && hasReliableLinkContext(conversationId, channel)
       ? buildMessageLink({
           conversationId,
           messageId: id,
           tenantId: getTenantId() ?? undefined,
           parentMessageId: isThreadReply ? rootMessageId : undefined,
           teamsBaseUrl: getTeamsBaseUrl(),
+          channel,
         })
       : undefined;
 
@@ -530,6 +539,7 @@ export async function getThreadMessages(
       timestamp,
       when: when || undefined,
       conversationId,
+      ...(channel ?? {}),
       clientMessageId: msg.clientmessageid,
       isFromMe: fromMri === auth.userMri,
       messageLink,
@@ -559,6 +569,7 @@ export async function getThreadMessages(
 
   return ok({
     conversationId,
+    ...(channel ?? {}),
     messages,
     olderCursor,
   });
@@ -711,7 +722,7 @@ export async function deleteMessage(
  */
 export async function getConversationProperties(
   conversationId: string
-): Promise<Result<{ displayName?: string; conversationType?: string }>> {
+): Promise<Result<{ displayName?: string; conversationType?: string } & Omit<ChannelContext, 'conversationType'>>> {
   const authResult = requireMessageAuthWithConfig();
   if (!authResult.ok) {
     return authResult;
@@ -733,7 +744,6 @@ export async function getConversationProperties(
 
   const data = response.value.data;
   const threadProps = data.threadProperties;
-  const productType = threadProps?.productThreadType;
 
   // Try to get display name from various sources
   let displayName: string | undefined;
@@ -771,33 +781,17 @@ export async function getConversationProperties(
     }
   }
 
-  // Determine conversation type
-  let conversationType: string | undefined;
-
-  if (productType) {
-    if (productType === 'Meeting') {
-      conversationType = 'Meeting';
-    } else if (productType.includes('Channel') || productType === 'TeamsTeam') {
-      conversationType = 'Channel';
-    } else if (productType === 'Chat' || productType === 'OneOnOne') {
-      conversationType = 'Chat';
-    }
-  }
-
-  // Fallback to ID pattern detection
-  if (!conversationType) {
-    if (conversationId.includes('meeting_')) {
-      conversationType = 'Meeting';
-    } else if (threadProps?.groupId) {
-      conversationType = 'Channel';
-    } else if (conversationId.includes('@thread.tacv2') || conversationId.includes('@thread.v2')) {
-      conversationType = 'Chat';
-    } else if (conversationId.startsWith('8:')) {
-      conversationType = 'Chat';
-    }
-  }
-
-  return ok({ displayName, conversationType });
+  const type = getConversationType(conversationId, threadProps);
+  const conversationType = type === 'channel' ? 'Channel' : type === 'meeting' ? 'Meeting' : 'Chat';
+  return ok({
+    displayName, conversationType,
+    ...(conversationType === 'Channel' ? {
+      teamName: typeof threadProps?.spaceThreadTopic === 'string' ? threadProps.spaceThreadTopic : undefined,
+      channelName: typeof threadProps?.topicThreadTopic === 'string' ? threadProps.topicThreadTopic
+        : typeof threadProps?.topic === 'string' ? threadProps.topic : undefined,
+      teamId: typeof threadProps?.groupId === 'string' ? threadProps.groupId : undefined,
+    } : {}),
+  });
 }
 
 /**
@@ -1501,7 +1495,7 @@ export async function waitForReply(
   const start = Date.now();
   const deadline = start + maxWait * 1000;
   let polls = 0;
-  let newMessages: ThreadMessage[] = [];
+  let newMessages: ThreadMessage[];
 
   for (;;) {
     polls++;

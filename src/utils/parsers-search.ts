@@ -35,7 +35,7 @@ export function parseV2Result(item: Record<string, unknown>, linkContext?: LinkC
     // Using this ensures the deep link goes to the correct thread context
     const clientThreadId = source.ClientThreadId;
     if (typeof clientThreadId === 'string' && clientThreadId.length > 0) {
-      conversationId = clientThreadId;
+      conversationId = clientThreadId.split(';')[0];
     }
     
     // Fallback to Extensions.SkypeGroupId (the channel ID)
@@ -82,6 +82,8 @@ export function parseV2Result(item: Record<string, unknown>, linkContext?: LinkC
     }
   }
   
+  const channel = conversationId ? linkContext?.channels?.get(conversationId) : undefined;
+
   // Build message link if we have the required data
   let messageLink: string | undefined;
   if (conversationId && messageTimestamp) {
@@ -90,6 +92,7 @@ export function parseV2Result(item: Record<string, unknown>, linkContext?: LinkC
       messageId: messageTimestamp,
       tenantId: linkContext?.tenantId,
       parentMessageId,
+      channel,
       teamsBaseUrl: linkContext?.teamsBaseUrl,
     });
   }
@@ -103,6 +106,8 @@ export function parseV2Result(item: Record<string, unknown>, linkContext?: LinkC
     channelName: source?.ChannelName as string || source?.Topic as string,
     teamName: source?.TeamName as string || source?.GroupName as string,
     conversationId,
+    ...(channel ?? {}),
+    threadRootId: parentMessageId && parentMessageId !== messageTimestamp ? parentMessageId : undefined,
     // Use the timestamp as messageId (required for thread replies)
     // Fallback to ReferenceId if timestamp extraction fails
     messageId: messageTimestamp || item.ReferenceId as string,

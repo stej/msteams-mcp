@@ -231,6 +231,9 @@ async function refreshAccessToken(
   refreshToken: string,
   scopes: string,
 ): Promise<Result<TokenResponse>> {
+  if (!/^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(tenantId)) {
+    return err(createError(ErrorCode.INVALID_INPUT, 'The tenant ID is invalid.', { retryable: false }));
+  }
   const url = TOKEN_ENDPOINT.replace('{tenantId}', tenantId);
 
   const body = new URLSearchParams({
@@ -246,6 +249,7 @@ async function refreshAccessToken(
     // from SPA clients include a cross-origin Origin header matching a registered
     // redirect URI. Without this, Azure AD returns AADSTS9002327.
     const response = await fetch(url, {
+      redirect: 'error',
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -270,6 +274,8 @@ async function refreshAccessToken(
       } catch {
         errorDetail = `HTTP ${response.status}: ${errorText.substring(0, 200)}`;
       }
+
+      errorDetail = /AADSTS\d+/.exec(errorDetail)?.[0] ?? 'HTTP ' + response.status;
 
       // Consent/resource refusals are not an expired Teams login. Do not classify
       // all HTTP 400s this way: invalid_grant may require renewed SSO or MFA.
@@ -311,7 +317,7 @@ async function refreshAccessToken(
 
     return err(createError(
       ErrorCode.NETWORK_ERROR,
-      `Token refresh network error: ${error instanceof Error ? error.message : String(error)}`,
+      `Token refresh network request failed.`,
       { retryable: true }
     ));
   }
@@ -332,6 +338,7 @@ async function exchangeSkypeToken(
 ): Promise<Result<{ skypeToken: string; expiresIn: number }>> {
   try {
     const response = await fetch(AUTHSVC_ENDPOINT, {
+      redirect: 'error',
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${skypeSpacesToken}`,
@@ -342,10 +349,9 @@ async function exchangeSkypeToken(
     });
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
       return err(createError(
         ErrorCode.AUTH_EXPIRED,
-        `Skype token exchange failed: HTTP ${response.status}: ${errorText.substring(0, 200)}`,
+        `Skype token exchange failed: HTTP ${response.status}`,
         { retryable: false }
       ));
     }
@@ -375,7 +381,7 @@ async function exchangeSkypeToken(
 
     return err(createError(
       ErrorCode.NETWORK_ERROR,
-      `Skype token exchange error: ${error instanceof Error ? error.message : String(error)}`,
+      `Skype token exchange request failed.`,
       { retryable: true }
     ));
   }

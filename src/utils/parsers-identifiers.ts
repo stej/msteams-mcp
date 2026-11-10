@@ -1,3 +1,5 @@
+import type { ChannelContext } from '../types/teams.js';
+
 /**
  * Message link building, conversation type detection, ID extraction, and timestamp utilities.
  */
@@ -15,7 +17,16 @@
  * - 1:1 chats: 19:guid_guid@unq.gbl.spaces
  * - Group chats: 19:xxx@thread.v2 (non-meeting)
  */
-export function getConversationType(conversationId: string): 'channel' | 'meeting' | 'chat' {
+export function getConversationType(
+  conversationId: string,
+  threadProperties: Record<string, unknown> = {}
+): 'channel' | 'meeting' | 'chat' {
+  const productType = threadProperties.productThreadType;
+  if (productType === 'Meeting') return 'meeting';
+  if (productType === 'Chat' || productType === 'OneOnOne') return 'chat';
+  if (typeof productType === 'string' && (productType === 'TeamsTeam' || productType.includes('Channel'))) return 'channel';
+  if (threadProperties.threadType === 'topic' || threadProperties.threadType === 'space'
+    || typeof threadProperties.groupId === 'string' && threadProperties.groupId) return 'channel';
   if (conversationId.includes('@thread.tacv2')) {
     return 'channel';
   }
@@ -43,6 +54,8 @@ export interface MessageLinkOptions {
   tenantId?: string;
   /** For channel messages: the team's group ID (GUID). */
   groupId?: string;
+  /** Verified channel metadata, including legacy channel IDs. */
+  channel?: ChannelContext;
   /** For channel messages: the parent/root message ID (epoch ms). If omitted for channels, messageId is used. */
   parentMessageId?: string;
   /** Teams base URL (for GCC/GCC-High support). */
@@ -51,6 +64,10 @@ export interface MessageLinkOptions {
 
 /** Context for building reliable message deep links. */
 export interface LinkContext {
+  /** Parent IDs read from the original messages, keyed by messageReferenceKey. */
+  messageRoots?: ReadonlyMap<string, string>;
+  /** Per-request, authenticated channel locations keyed by conversation ID. */
+  channels?: ReadonlyMap<string, ChannelContext>;
   /** Tenant ID (GUID) from session. */
   tenantId?: string;
   /** Teams base URL (for GCC/GCC-High support). */
@@ -69,7 +86,7 @@ export interface LinkContext {
 export function buildMessageLink(opts: MessageLinkOptions): string {
   const base = opts.teamsBaseUrl ?? DEFAULT_TEAMS_LINK_BASE;
   const msgId = typeof opts.messageId === 'string' ? opts.messageId : String(opts.messageId);
-  const convType = getConversationType(opts.conversationId);
+  const convType = opts.channel?.conversationType ?? (opts.channel || opts.groupId ? 'channel' : getConversationType(opts.conversationId));
 
   // Build the base URL path — encode the conversationId for URL safety
   const linkUrl = `${base}/l/message/${encodeURIComponent(opts.conversationId)}/${msgId}`;
@@ -79,7 +96,10 @@ export function buildMessageLink(opts: MessageLinkOptions): string {
   if (convType === 'channel') {
     // Channel deep links require tenantId, groupId, and parentMessageId
     if (opts.tenantId) params.set('tenantId', opts.tenantId);
-    if (opts.groupId) params.set('groupId', opts.groupId);
+    const groupId = opts.channel?.teamId || opts.groupId;
+    if (groupId) params.set('groupId', groupId);
+    if (opts.channel?.teamName) params.set('teamName', opts.channel.teamName);
+    if (opts.channel?.channelName) params.set('channelName', opts.channel.channelName);
     // parentMessageId is always required — for top-level posts it equals the messageId
     params.set('parentMessageId', opts.parentMessageId ?? msgId);
     params.set('createdTime', msgId);
@@ -366,4 +386,27 @@ export function buildOneOnOneConversationId(
   const sorted = [id1, id2].sort();
 
   return `19:${sorted[0]}_${sorted[1]}@unq.gbl.spaces`;
+}
+
+/** Original message/thread referenced by a virtual Teams conversation. */
+export interface MessageReference {
+  conversationId: string;
+  messageId: string;
+  kind: 'message' | 'thread';
+}
+
+export function parseMessageReference(value: unknown): MessageReference | undefined {
+  if (typeof value !== 'string') return undefined;
+  const match = /^T_(.+)_(?:M_(\d+)|P_(\d+)_Threads)$/.exec(value);
+  if (!match) return undefined;
+  return { conversationId: match[1], messageId: match[2] ?? match[3], kind: match[2] ? 'message' : 'thread' };
+}
+
+export function messageReferenceKey(reference: Pick<MessageReference, 'conversationId' | 'messageId'>): string {
+  return JSON.stringify([reference.conversationId, reference.messageId]);
+}
+
+/** Ambiguous legacy/channel IDs need verified metadata before a link can be emitted. */
+export function hasReliableLinkContext(conversationId: string, context?: ChannelContext): boolean {
+  return !!context || !/@thread\.(skype|tacv2)$/.test(conversationId);
 }

@@ -6,7 +6,7 @@
  * can be derived from the schemas.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { getToolDefinitions } from '../tools/registry.js';
 import {
   UsageError,
@@ -17,7 +17,10 @@ import {
 } from './resolve.js';
 import { firstSentence } from './help.js';
 
+// Resolver coverage deliberately uses the full catalog; invocation still enforces policy.
+vi.stubEnv('MSTEAMS_ACCESS_MODE', 'fullAccess');
 const tools = getToolDefinitions();
+vi.unstubAllEnvs();
 const names = tools.map(tool => tool.name);
 const tool = (name: string) => tools.find(t => t.name === name)!;
 

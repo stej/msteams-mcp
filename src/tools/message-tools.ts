@@ -482,7 +482,7 @@ const getFollowedThreadsToolDefinition: Tool = {
 
 const getMessageToolDefinition: Tool = {
   name: 'teams_get_message',
-  description: 'Get a single message by ID with full content. Works for messages of any age - no retention limit. Includes reactions (individual reactors) and reactionSummary (counts per emoji) when present. Use this to resolve truncated search results, saved message stubs, or retrieve any specific message when you have the conversationId and messageId.',
+  description: 'Get a single message by ID with full content. Channel messages include teamName, channelName, teamId and a channel-aware messageLink; replies preserve their threadRootId. Works for messages of any age - no retention limit. Includes reactions (individual reactors) and reactionSummary (counts per emoji) when present. Use this to resolve truncated search results, saved message stubs, or retrieve any specific message when you have the conversationId and messageId.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -501,7 +501,7 @@ const getMessageToolDefinition: Tool = {
 
 const listChatsToolDefinition: Tool = {
   name: 'teams_list_chats',
-  description: 'List the user\'s recent conversations (1:1 chats, group chats, meetings and channels), newest activity first. Returns conversationId, chatType (oneOnOne/group/meeting/channel), topic, and a preview of the last message (sender, time, text). Use the returned conversationId with teams_get_thread to read messages or teams_send_message to reply. This is the fastest way to discover active chat IDs without a search.',
+  description: 'List the user\'s recent conversations (1:1 chats, group chats, meetings and channels), newest activity first. Returns conversationId, chatType (oneOnOne/group/meeting/channel), topic (resolved from the other participant for unnamed 1:1 chats when available), and a preview of the last message (sender, time, text). Use the returned conversationId with teams_get_thread to read messages or teams_send_message to reply. Channel entries also include teamName, channelName and teamId. This is the fastest way to discover active chat IDs without a search.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -987,6 +987,9 @@ async function handleGetSavedMessages(
         sender: msg.sender,
         timestamp: msg.timestamp,
         sourceConversationId: msg.sourceConversationId,
+        teamName: msg.teamName,
+        channelName: msg.channelName,
+        teamId: msg.teamId,
         sourceMessageId: msg.sourceMessageId,
         messageLink: msg.messageLink,
       })),
@@ -1013,6 +1016,9 @@ async function handleGetFollowedThreads(
         sender: thread.sender,
         timestamp: thread.timestamp,
         sourceConversationId: thread.sourceConversationId,
+        teamName: thread.teamName,
+        channelName: thread.channelName,
+        teamId: thread.teamId,
         sourcePostId: thread.sourcePostId,
         messageLink: thread.messageLink,
       })),
@@ -1040,6 +1046,9 @@ async function handleGetMessage(
       timestamp: msg.timestamp,
       when: msg.when,
       conversationId: msg.conversationId,
+      teamName: msg.teamName,
+      channelName: msg.channelName,
+      teamId: msg.teamId,
       isFromMe: msg.isFromMe,
       messageLink: msg.messageLink,
       links: msg.links,

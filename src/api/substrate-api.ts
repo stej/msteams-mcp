@@ -1,3 +1,4 @@
+import { hasReliableLinkContext } from '../utils/parsers-identifiers.js';
 /**
  * Substrate API client for search and people operations.
  * 
@@ -10,6 +11,7 @@ import { type Result, ok } from '../types/result.js';
 import { requireSubstrateTokenAsync, getTenantId, getTeamsBaseUrl, handleSubstrateError } from '../utils/auth-guards.js';
 import {
   parseSearchResults,
+  buildMessageLink,
   parseEmailSearchResults,
   parsePeopleResults,
   parseChannelResults,
@@ -19,6 +21,7 @@ import {
   type LinkContext,
 } from '../utils/parsers.js';
 import { getMyTeamsAndChannels } from './csa-api.js';
+import { loadChannelContexts } from './channel-context.js';
 import type { TeamsSearchResult, SearchPaginationResult, EmailSearchResult } from '../types/teams.js';
 
 /** Search result with pagination. */
@@ -121,6 +124,22 @@ export async function searchMessages(
 
   const maxResults = options.maxResults ?? size;
   const limitedResults = results.slice(0, maxResults);
+  const channels = await loadChannelContexts(limitedResults.flatMap(result => result.conversationId ? [result.conversationId] : []));
+  for (const result of limitedResults) {
+    const channel = result.conversationId ? channels.get(result.conversationId) : undefined;
+    if (result.conversationId && !hasReliableLinkContext(result.conversationId, channel)) {
+      result.messageLink = undefined;
+      continue;
+    }
+    if (channel) {
+      Object.assign(result, channel);
+      if (result.conversationId && result.messageId) result.messageLink = buildMessageLink({
+        conversationId: result.conversationId, messageId: result.messageId,
+        parentMessageId: result.threadRootId, tenantId: linkContext.tenantId,
+        teamsBaseUrl: linkContext.teamsBaseUrl, channel,
+      });
+    }
+  }
 
   return ok({
     results: limitedResults,

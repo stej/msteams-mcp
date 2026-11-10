@@ -33,7 +33,8 @@ search-api-findings.json
 *.har
 
 # SSO research output (contains sensitive auth data)
-scripts/
+/scripts/*
+!/scripts/windows-protection.ps1
 
 # Logs
 *.log

@@ -7,13 +7,14 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { z } from 'zod';
 import type { ToolResult } from './index.js';
+import { isToolAllowed, hasReadOnlySideEffect, isReadOnly } from '../security/access-policy.js';
 import { ErrorCode, createError } from '../types/errors.js';
 
 /** Type-erased tool entry for the registry — avoids generic variance issues. */
 interface RegistryEntry {
   definition: Tool;
   schema: z.ZodTypeAny;
-  handler: (input: z.output<z.ZodTypeAny>) => Promise<ToolResult>;
+  handler(input: z.output<z.ZodTypeAny>): Promise<ToolResult>;
 }
 
 import { searchTools } from './search-tools.js';
@@ -67,7 +68,10 @@ const toolsByName = new Map<string, RegistryEntry>(
  * Gets all tool definitions for MCP ListTools.
  */
 export function getToolDefinitions(): Tool[] {
-  return allTools.map(tool => tool.definition);
+  return allTools.filter(tool => isToolAllowed(tool.definition.name)).map(tool => ({
+    ...tool.definition,
+    annotations: { ...tool.definition.annotations, readOnlyHint: isReadOnly() && tool.definition.name !== 'teams_login' },
+  }));
 }
 
 /**
@@ -88,6 +92,11 @@ export async function invokeTool(name: string, args: unknown): Promise<ToolResul
       success: false,
       error: createError(ErrorCode.INVALID_INPUT, `Unknown tool: ${name}`, { retryable: false }),
     };
+  }
+
+  if (!isToolAllowed(name) || hasReadOnlySideEffect(name, args)) {
+    return { success: false, error: createError(ErrorCode.ACCESS_DENIED,
+      'This operation is disabled in readOnly mode.', { retryable: false }) };
   }
 
   // Validate input

@@ -88,7 +88,7 @@ const searchToolDefinition: Tool = {
 
 const getThreadToolDefinition: Tool = {
   name: 'teams_get_thread',
-  description: 'Get messages from a Teams conversation/thread. Default: newest-first (latest messages at top). For channels: messages include isThreadReply (true for replies) and threadRootId (ID of the post being replied to). Messages without threadRootId are top-level posts. Use threadRootId to group related messages. Messages include reactions (individual reactors, names resolved where possible) and reactionSummary (counts per emoji) when present. Each message includes a "when" field with the day of week (e.g., "Friday, January 30, 2026, 10:45 AM UTC"). Returns unread count and can optionally mark as read. Pass olderCursor back as cursor to page through older history.',
+  description: 'Get messages from a Teams conversation/thread. Channel results include teamName, channelName and teamId; messageLink targets the post or reply with its parent thread. Default: newest-first (latest messages at top). For channels: messages include isThreadReply (true for replies) and threadRootId (ID of the post being replied to). Messages without threadRootId are top-level posts. Use threadRootId to group related messages. Messages include reactions (individual reactors, names resolved where possible) and reactionSummary (counts per emoji) when present. Each message includes a "when" field with the day of week (e.g., "Friday, January 30, 2026, 10:45 AM UTC"). Returns unread count and can optionally mark as read. Pass olderCursor back as cursor to page through older history.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -315,6 +315,9 @@ async function handleGetThread(
     success: true,
     data: {
       conversationId: result.value.conversationId,
+      teamName: result.value.teamName,
+      channelName: result.value.channelName,
+      teamId: result.value.teamId,
       messageCount: result.value.messages.length,
       unreadCount,
       lastReadMessageId,

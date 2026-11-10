@@ -1211,7 +1211,7 @@ describe('parseVirtualConversationMessage', () => {
     expect(result!.messageLink).toBeUndefined();
   });
 
-  it('builds message link when linkContext is provided', () => {
+  it('builds a verified channel link with its authenticated location and source root', () => {
     const msg = {
       id: '123',
       messagetype: 'Text',
@@ -1222,12 +1222,16 @@ describe('parseVirtualConversationMessage', () => {
       secondaryReferenceId: 'T_19:abc@thread.tacv2_M_1705760000000',
     };
     const result = parseVirtualConversationMessage(msg, savedPattern, {
+      channels: new Map([['19:abc@thread.tacv2', { conversationType: 'channel' as const, teamId: 'group-123', teamName: 'Team', channelName: 'General' }]]),
+      messageRoots: new Map([[JSON.stringify(['19:abc@thread.tacv2', '1705760000000']), '1705760000000']]),
       tenantId: 'tenant-123',
       teamsBaseUrl: 'https://teams.microsoft.com',
     });
     expect(result).not.toBeNull();
     expect(result!.messageLink).toBeDefined();
     expect(result!.messageLink).toContain('teams.microsoft.com');
+    expect(new URL(result!.messageLink!).searchParams.get('groupId')).toBe('group-123');
+    expect(new URL(result!.messageLink!).searchParams.get('parentMessageId')).toBe('1705760000000');
   });
 
   it('extracts links from HTML content', () => {
